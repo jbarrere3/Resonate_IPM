@@ -19,8 +19,8 @@
 create_CS_color.vec = function(CS){
   
   # Vector of color
-  color.vec = c("#FFB703", "#DC2F02", "#81B29A", "#48CAE4", "#005F73", 
-                "#6930C3", "#588157", "#55A930", "#57CC99")
+  color.vec = c("#FFB703", "#DC2F02", "#81B29A", "#48CAE4", "#005F73", "#6930C3", 
+                "#588157", "#55A930", "#57CC99")[c(1:length(names(CS)))]
   
   # Named vector to use it in ggplot functions scale_color/fill
   names(color.vec) = names(CS)
@@ -255,7 +255,7 @@ plot_FD_effect_resilience = function(FD, resilience, CS_color.vec, dir.in){
     scale_color_manual(values = c(`no` = "gray", `yes` = "black")) +
     scale_fill_manual(values = CS_color.vec) +
     geom_hline(yintercept = 0, linetype = "dashed") +
-    facet_grid(var.exp ~ var.resp, scales = "free") +
+    facet_grid(var.resp ~ var.exp, scales = "free") +
     theme(panel.background = element_rect(color = "black", fill = "white"), 
           panel.grid = element_blank(), 
           strip.background = element_blank(), 
@@ -280,36 +280,118 @@ plot_FD_effect_resilience = function(FD, resilience, CS_color.vec, dir.in){
   return(c(fig.file.in, table.file.stats))
 }
 
-#' Plot the climate in each case study
-#' @param CS case study
-#' @param CS_color.vec vector of color for each case study
-#' @param file.in Name of the file to save, including path
-plot_CS_climate = function(CS, CS_color.vec, file.in){
+#' Plot assemblage per richness
+#' @param CS list of CS objects
+#' @param file.out name of the file to save, including path
+plot_n_per_richness = function(CS, file.out){
   
-  # Create directory if necessary
-  create_dir_if_needed(file.in)
+  # Create output directory if needed
+  create_dir_if_needed(file.out)
   
-  # Format data for plotting
-  data = data.frame(CS = names(CS), sgdd = NA_real_, wai = NA_real_)
-  for(i in 1:length(names(CS))) data[i, c("sgdd", "wai")] = CS[[i]]$climate[c("sgdd", "wai")]
+  # Extract data per case study
+  for(i in 1:length(names(CS))){
+    nperrichness.i = CS[[i]]$data %>%
+      group_by(CS, Richness) %>%
+      summarize(n = n())
+    if(i == 1) nperrichness = nperrichness.i
+    else nperrichness = rbind(nperrichness, nperrichness.i)
+  }
   
   # Make the plot
-  plot.out = data %>% 
-    ggplot(aes(x = wai, y = sgdd)) + 
-    geom_point(aes(fill = CS), shape = 21, color = "black", size = 2) +
-    scale_fill_manual(values = CS_color.vec) +
-    scale_color_manual(values = CS_color.vec) +
-    geom_text(aes(label = CS, color = CS), nudge_y = 50, nudge_x = 0.01) + 
-    xlim(range(data$wai)*1.4) +
-    theme(legend.position = "none", 
-          panel.background = element_rect(fill = "white", color = "black"), 
-          panel.grid = element_blank())
+  plot.out = nperrichness %>%
+    ggplot(aes(x = Richness, y = n)) + 
+    geom_bar(stat = "identity") + 
+    facet_wrap(~ CS, nrow = 2) + 
+    geom_hline(yintercept = 10, color = "red", linetype = "dashed")
   
   # Save plot 
-  ggsave(file.in, plot.out, width = 12, height = 9, units = "cm", 
+  ggsave(file.out, plot.out, width = 21, height = 11, units = "cm", 
          dpi = 600, bg = "white")
   
-  # return name of the file to save
-  return(file.in)
+  # Return file saved
+  return(file.out)
+}
+
+
+
+#' Plot species climate margin vs expected climate in each case study
+#' @param future_climate_all future climate in case studies
+#' @param species_list dataframe with species present per case study
+#' @param year.in Year for which to plot the climate
+#' @param file.out name of the file to save, including path
+plot_margin_vs_climate = function(
+  future_climate_all, species_list, year.in, file.out){
+  
+  # Create output directory if needed
+  create_dir_if_needed(file.out)
+  
+  # dataframe to join case studies name
+  df.cs = data.frame(cs = c("Bauges", "Catalonia",  "Galicia / Northern Portugal", 
+                            "Ireland", "Istria", "Kostelek", "New Forest", 
+                            "South Western Finland", "Upper Rhine Valley and Foothills"), 
+                     CS = c("FRANCE", "CATALONIA", "GALICIA", "REPUBLIC_OF_IRELAND", 
+                            "CROATIA", "CZECH_REPUBLIC", "UK", "FINLAND", "GERMANY"))
+  
+  # Climate per case study for the selected year and ssp
+  climate = future_climate_all %>%
+    filter(year == year.in) %>%
+    group_by(cs, ssp) %>%
+    filter(pet > 0) %>%
+    summarize(sgdd_lwr = quantile(sgdd, 0.025),
+              sgdd_upr = quantile(sgdd, 0.975),
+              sgdd = mean(sgdd), 
+              wai_lwr = quantile(wai, 0.025),
+              wai_upr = quantile(wai, 0.975),
+              wai = mean(wai))
+  
+  
+  # Format the margins per species
+  data("climate_species")
+  margins.perspecies = climate_species %>%
+    dplyr::select(sp, N, wai) %>%
+    spread(key = "N", value = "wai") %>%
+    rename("wai.cold" = "3", "wai.opt" = "2", "wai.hot" = "1") %>%
+    left_join((climate_species %>%
+                 dplyr::select(sp, N, sgdd) %>%
+                 spread(key = "N", value = "sgdd") %>%
+                 rename("sgdd.cold" = "3", "sgdd.opt" = "2", "sgdd.hot" = "1")), 
+              by = "sp")
+  
+  # Data of species margin per case study 
+  data.margins.cs = species_list %>%
+    left_join(df.cs, by = "CS") %>%
+    dplyr::select(ID.species, cs, species) %>%
+    left_join((margins.perspecies %>% rename("species" = "sp")), 
+              by = "species")
+  
+  # Plot margin of species present per case study and climate
+  plot.out = climate %>% 
+    filter(cs %in% unique(data.margins.cs$cs)) %>%
+    ggplot(aes(x = wai, y = sgdd)) + 
+    facet_wrap(~ cs, nrow = 3) + 
+    geom_rect(data = (data.margins.cs %>% mutate(wai = NA_real_, sgdd = NA_real_)), 
+              aes(xmin = wai.hot, xmax = wai.cold, ymin = sgdd.cold, 
+                  ymax = sgdd.hot, fill = species), inherit.aes = TRUE,
+              color = NA, alpha = 0.5) + 
+    geom_rect(data = (data.margins.cs %>% 
+                        group_by(cs) %>%
+                        summarize(wai.lwr = mean(wai.hot), 
+                                  wai.upr = mean(wai.cold), 
+                                  sgdd.lwr = mean(sgdd.cold), 
+                                  sgdd.upr = mean(sgdd.hot)) %>% 
+                        mutate(wai = NA_real_, sgdd = NA_real_)), 
+              aes(xmin = wai.lwr, xmax = wai.upr, ymin = sgdd.lwr, ymax = sgdd.upr), 
+              inherit.aes = TRUE, fill = NA, color = "red") +
+    geom_point(aes(shape = ssp)) +
+    geom_errorbarh(aes(xmin = wai_lwr, xmax = wai_upr), height = 0) + 
+    geom_errorbar(aes(ymin = sgdd_lwr, ymax = sgdd_upr), width = 0) + 
+    ggtitle(paste0("Year ", year.in))
+  
+  # Save the plot
+  ggsave(file.out, plot.out, width = 16, height = 21, units = "cm", 
+         dpi = 600, bg = "white")
+  
+  # Return file saved
+  return(file.out)
   
 }

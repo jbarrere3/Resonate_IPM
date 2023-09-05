@@ -120,15 +120,49 @@ format_species_share_raw = function(species_share_raw){
 }
 
 
+#' Format the raw climate data to extract the initial climate per case study
+#' @param climate_raw Raw climate data
+#' @param ssp.in ssp scenario to choose the data
+#' @param year.in year to choose for the reference climate
+get_climate_ref = function(climate_raw, ssp.in = "ssp126", year.in = 2015){
+  
+  # Data frame to join case studies name
+  df.cs = data.frame(
+    cs = c("Bauges", "Catalonia",  "Galicia / Northern Portugal", 
+           "Ireland", "Istria", "Kostelek", "New Forest", 
+           "South Western Finland", "Upper Rhine Valley and Foothills"), 
+    CS = c("FRANCE", "CATALONIA", "GALICIA", "REPUBLIC_OF_IRELAND", 
+           "CROATIA", "CZECH_REPUBLIC", "UK", "FINLAND", "GERMANY")
+  )
+  
+  # Format the output dataset
+  out = climate_raw %>%
+    # Only keep the right year and ssp scenario
+    filter(year == year.in & ssp == ssp.in) %>%
+    # Add the case study names used for the simulations
+    left_join(df.cs, by = "cs") %>%
+    # Remove errors in the calculation
+    filter(pet > 0) %>%
+    # Calculate average climate per case study 
+    group_by(CS) %>%
+    summarize(wai = mean(wai), sgdd = mean(sgdd))
+  
+  # Return formatted data set
+  return(out)
+}
+
 
 #' Function to generate a list with climate with species combinations
-#' @param FUNDIV_climate_species data with climate and sp presence per plot
-#' @param n_per_richness number of sp combinations to select per sp richness
+#' @param species_share data with share of each species per cs
+#' @param climate_ref data frame containing climate per case study
+#' @param n_per_richness number of sp combinations max to select per sp richness
 #' @param richness_max Maximum level of species richness to explore in each CS
+#' @param share_min_coef Vector of length two giving intercept and slope of 
+#'                      the relation btw richness and minimum share of all sp
 #' @param disturbance.in which disturbance do we plan to apply ?
 #' @param exclude.in vector of species to exclude if bad estimation or IPM fit
-make_CS <- function(species_share, n_per_richness = 10, richness_max = 4, 
-                    disturbance.in = "storm",
+make_CS <- function(species_share, climate_ref, n_per_richness = 20, richness_max = 7, 
+                    share_min_coef = c(-10, 15), disturbance.in = "storm",
                     exclude.in = c("Carpinus_betulus", "Quercus_ilex")){
   
   # Initialize output list
@@ -138,7 +172,6 @@ make_CS <- function(species_share, n_per_richness = 10, richness_max = 4,
   vec.cs = unique(species_share$CS)
   
   # Load data from matreex
-  data("climate_species")
   data("disturb_coef")
   
   # Species that can in the end be included
@@ -183,10 +216,15 @@ make_CS <- function(species_share, n_per_richness = 10, richness_max = 4,
         data.ij$Assemblage[k] = paste(combi.ij[, k], collapse = ".")
       }
       
-      # Arrange by descending share
+      # Ensure that we select combinations that represent a sufficeintly high share
+      data.ij = data.ij %>% 
+        filter(share > (share_min_coef[1] + share_min_coef[2]*j))
+      
+      # Keep the combinations selected below n_per_richness
       data.ij = data.ij %>% arrange(desc(share))
-      # Remove less likely assemblages if more than n_per_richness
       if(dim(data.ij)[1] > n_per_richness) data.ij = data.ij[c(1:n_per_richness), ]
+      
+      
       # Add to final CS dataset 
       if(j == 1) data.i = data.ij
       else data.i = rbind(data.i, data.ij)
@@ -198,16 +236,9 @@ make_CS <- function(species_share, n_per_richness = 10, richness_max = 4,
     # Climate for the case study: mean of sgdd and wai weighted 
     list.i$climate = setNames(
       object = as.numeric(
-        species.i %>%
-          left_join(climate_species %>%
-                      filter(N == 2) %>%
-                      dplyr::select(species = sp, sgdd, wai, PC1, PC2), 
-                    by = "species") %>%
-          summarize(sgdd = weighted.mean(sgdd, w = share), 
-                    wai = weighted.mean(wai, w = share), 
-                    PC1 = weighted.mean(PC1, w = share), 
-                    PC2 = weighted.mean(PC2, w = share)) %>%
-          mutate(sgdd2 = sgdd^2, wai2 = wai^2, sgddb = 1/sgdd, 
+        climate_ref %>% 
+          filter(CS == CS.i) %>%
+          mutate(PC1 = 0, PC2 = 0, sgdd2 = sgdd^2, wai2 = wai^2, sgddb = 1/sgdd, 
                  waib = 1/(1 + wai), N = 2, SDM = 0) %>%
           dplyr::select(sgdd, wai, sgddb, waib, wai2, sgdd2, PC1, PC2, N, SDM)
       ), c("sgdd", "wai", "sgddb", "waib", "wai2", "sgdd2", "PC1", "PC2", "N", "SDM")
@@ -219,8 +250,10 @@ make_CS <- function(species_share, n_per_richness = 10, richness_max = 4,
     # Save the information on species combinations simulated
     list.i$data = data.i
     
-    # Add to the final list
-    eval(parse(text = paste0("list.out$", CS.i, " = list.i")))
+    # Add to the final list if enough data
+    if(dim(data.i)[1] >= 10){
+      eval(parse(text = paste0("list.out$", CS.i, " = list.i")))}
+    
     
   }
   
@@ -560,77 +593,82 @@ get_resilience_metrics <- function(sim_disturbance, disturbance.df, forest_list)
     # First, verify that equilibrium was reached
     if(!is.na(sim.i[1, 1])){
       
-      # mean dbh at equilibrium and after disturbance
-      dbh_i = sim.i %>%
-        filter(var == "n") %>%
-        filter(time %in% c(1, (max(disturbance.df$t)+1))) %>%
-        group_by(size, time) %>%
-        summarize(ntot = sum(value)) %>%
-        ungroup() %>% group_by(time) %>%
-        filter(size > 0) %>%
-        mutate(ntot_size = ntot*size) %>%
-        summarize(mean_dbh = weighted.mean(size, w = ntot), 
-                  q10_dbh = weighted.quantile(size, w = ntot, prob = 0.1), 
-                  q90_dbh = weighted.quantile(size, w = ntot, prob = 0.9))
-      out$dbh_mean[i] <- subset(dbh_i, time == 1)$mean_dbh
-      out$dbh_q10[i] <- subset(dbh_i, time == 1)$q10_dbh
-      out$dbh_q90[i] <- subset(dbh_i, time == 1)$q90_dbh
-      out$dbh_mean_postdist[i] <- subset(dbh_i, time != 1)$mean_dbh
-      out$dbh_q10_postdist[i] <- subset(dbh_i, time != 1)$q10_dbh
-      out$dbh_q90_postdist[i] <- subset(dbh_i, time != 1)$q90_dbh
-      
-      # Format the output
-      data.i <- sim.i %>%
-        filter(var == "BAsp") %>%
-        filter(!equil) %>%
-        group_by(time) %>%
-        summarize(BA = sum(value))
-      
-      ## Calculate stability before disturbance (to check equilibrium)
-      out$SD[i] = sd(subset(data.i, time %in% c(1:(tdist-1)))$BA)
-      out$BA_diff[i] = diff(range(subset(data.i, time %in% c(1:(tdist-1)))$BA))
-      
-      ## Calculate resistance
-      #  - Basal area at equilibrium
-      Beq.i = mean((data.i %>% filter(time < min(disturbance.df$t)))$BA)
-      out$BA_eq[i] = Beq.i
-      # - Basal area after disturbance
-      Bdist.i = (data.i %>% filter(time == max(disturbance.df$t)+1))$BA
-      # - Resistance : logit of the percentage of basal area that survived 
-      #out$resistance[i] = Beq.i/(Beq.i - Bdist.i)
-      out$resistance[i] = log((Bdist.i/Beq.i)/(1 - (Bdist.i/Beq.i)))
-      
-      ## Calculate recovery
-      #  - Time at which population recovered fully
-      Rec.time.i = min((data.i %>% 
-                          filter(time > max(disturbance.df$t)) %>%
-                          filter(BA > Beq.i))$time)
-      # - Basal area 20 years after disturbance
-      Bdist20.i = (data.i %>% filter(time == max(disturbance.df$t)+21))$BA
-      # - Recovery = slope of BA increase in teh 20 years after disturbance
-      out$recovery[i] = abs(Bdist20.i - Bdist.i)/20
-      
-      ## Calculate resilience
-      out$resilience[i] <- 1/sum((data.i %>%
-                                    mutate(BA0 = .[which(.$time == 1), "BA"]) %>%
-                                    mutate(diff = abs(BA - BA0)))$diff)
-      
-      ## Calculate t0
-      #  - Time at which population recovered to 5% of the basal area lost
-      Rec.0.time.i = min((data.i %>% 
+      # Also verify that there was not a problem after the disturbance
+      if(!any(is.na(filter(sim.i, var == "BAsp" & 
+                           time == (max(disturbance.df$t)+1))$value))){
+        
+        # mean dbh at equilibrium and after disturbance
+        dbh_i = sim.i %>%
+          filter(var == "n") %>%
+          filter(time %in% c(1, (max(disturbance.df$t)+1))) %>%
+          group_by(size, time) %>%
+          summarize(ntot = sum(value)) %>%
+          ungroup() %>% group_by(time) %>%
+          filter(size > 0) %>%
+          mutate(ntot_size = ntot*size) %>%
+          summarize(mean_dbh = weighted.mean(size, w = ntot), 
+                    q10_dbh = weighted.quantile(size, w = ntot, prob = 0.1), 
+                    q90_dbh = weighted.quantile(size, w = ntot, prob = 0.9))
+        out$dbh_mean[i] <- subset(dbh_i, time == 1)$mean_dbh
+        out$dbh_q10[i] <- subset(dbh_i, time == 1)$q10_dbh
+        out$dbh_q90[i] <- subset(dbh_i, time == 1)$q90_dbh
+        out$dbh_mean_postdist[i] <- subset(dbh_i, time != 1)$mean_dbh
+        out$dbh_q10_postdist[i] <- subset(dbh_i, time != 1)$q10_dbh
+        out$dbh_q90_postdist[i] <- subset(dbh_i, time != 1)$q90_dbh
+        
+        # Format the output
+        data.i <- sim.i %>%
+          filter(var == "BAsp") %>%
+          filter(!equil) %>%
+          group_by(time) %>%
+          summarize(BA = sum(value))
+        
+        ## Calculate stability before disturbance (to check equilibrium)
+        out$SD[i] = sd(subset(data.i, time %in% c(1:(tdist-1)))$BA)
+        out$BA_diff[i] = diff(range(subset(data.i, time %in% c(1:(tdist-1)))$BA))
+        
+        ## Calculate resistance
+        #  - Basal area at equilibrium
+        Beq.i = mean((data.i %>% filter(time < min(disturbance.df$t)))$BA)
+        out$BA_eq[i] = Beq.i
+        # - Basal area after disturbance
+        Bdist.i = (data.i %>% filter(time == max(disturbance.df$t)+1))$BA
+        # - Resistance : logit of the percentage of basal area that survived 
+        #out$resistance[i] = Beq.i/(Beq.i - Bdist.i)
+        out$resistance[i] = log((Bdist.i/Beq.i)/(1 - (Bdist.i/Beq.i)))
+        
+        ## Calculate recovery
+        #  - Time at which population recovered fully
+        Rec.time.i = min((data.i %>% 
                             filter(time > max(disturbance.df$t)) %>%
-                            filter(BA > (Beq.i + 19*Bdist.i)/20))$time)
-      # - Recovery = time to recover minus time of disturbance
-      out$t0[i] = Rec.0.time.i - max(disturbance.df$t)
-      
-      ## Calculate thalf
-      #  - Time at which population recovered to 50% of the basal area lost
-      Rec.half.time.i = min((data.i %>% 
-                               filter(time > max(disturbance.df$t)) %>%
-                               filter(BA > (Beq.i + Bdist.i)/2))$time)
-      # - Recovery = time to recover minus time of disturbance
-      out$thalf[i] = Rec.half.time.i - max(disturbance.df$t)
-      
+                            filter(BA > Beq.i))$time)
+        # - Basal area 20 years after disturbance
+        Bdist20.i = (data.i %>% filter(time == max(disturbance.df$t)+21))$BA
+        # - Recovery = slope of BA increase in teh 20 years after disturbance
+        out$recovery[i] = abs(Bdist20.i - Bdist.i)/20
+        
+        ## Calculate resilience
+        out$resilience[i] <- 1/sum((data.i %>%
+                                      mutate(BA0 = .[which(.$time == 1), "BA"]) %>%
+                                      mutate(diff = abs(BA - BA0)))$diff)
+        
+        ## Calculate t0
+        #  - Time at which population recovered to 5% of the basal area lost
+        Rec.0.time.i = min((data.i %>% 
+                              filter(time > max(disturbance.df$t)) %>%
+                              filter(BA > (Beq.i + 19*Bdist.i)/20))$time)
+        # - Recovery = time to recover minus time of disturbance
+        out$t0[i] = Rec.0.time.i - max(disturbance.df$t)
+        
+        ## Calculate thalf
+        #  - Time at which population recovered to 50% of the basal area lost
+        Rec.half.time.i = min((data.i %>% 
+                                 filter(time > max(disturbance.df$t)) %>%
+                                 filter(BA > (Beq.i + Bdist.i)/2))$time)
+        # - Recovery = time to recover minus time of disturbance
+        out$thalf[i] = Rec.half.time.i - max(disturbance.df$t)
+        
+      }
       
     }
     
@@ -779,6 +817,235 @@ get_data_model = function(climate, resilience, FD){
   # Return output
   return(out)
 }
+
+
+
+#' Format future climatic data to keep only information of interest for simul
+#' @param future_climate_all Raw data on future climatic oconditions
+format_future_climate = function(future_climate_all){
+  
+  # -- data to join case studies name
+  df.cs = data.frame(
+    cs = c("Bauges", "Catalonia",  "Galicia / Northern Portugal", 
+           "Ireland", "Istria", "Kostelek", "New Forest", 
+           "South Western Finland", "Upper Rhine Valley and Foothills"), 
+    CS = c("FRANCE", "CATALONIA", "GALICIA", "REPUBLIC_OF_IRELAND", 
+           "CROATIA", "CZECH_REPUBLIC", "UK", "FINLAND", "GERMANY")
+  )
+  
+  # -- homogenize case study in climate file 
+  out = future_climate_all %>%
+    left_join(df.cs, by = "cs") %>%
+    dplyr::select(-cs)
+  
+  # -- average climate over case studies
+  out = out %>%
+    group_by(CS, year, ssp) %>%
+    filter(pet > 0) %>%
+    summarize(sgdd = mean(sgdd, na.rm = TRUE), 
+              wai = mean(wai, na.rm = TRUE))
+  
+  # -- Return output
+  return(out)
+}
+
+
+#' Function to make a species object, save it as rds and return filename
+#' @param future_climate future climate data, formatted
+#' @param species_list table containing all species to create
+#' @param ID.species.in ID of the species to make in species_list
+make_species_mu_rds = function(future_climate, species_list, ID.species.in){
+  
+  # Identify the species and case study for iteration i
+  species.in = species_list$species[ID.species.in]
+  CS.in = species_list$CS[ID.species.in]
+  
+  # Load demographic parameter of the species 
+  eval(parse(text=paste0("fit.in <- fit_", species.in)))
+  
+  # Restrict climate file to the case study of interest
+  clim.in = subset(future_climate, CS == CS.in) 
+  
+  # From clim.in, build the margins file for iteration i
+  margins.in = data.frame(
+    sgdd = c(max(clim.in$sgdd), mean(clim.in$sgdd), min(clim.in$sgdd)), 
+    wai = c(min(clim.in$wai), mean(clim.in$wai), max(clim.in$wai)), 
+    N = c(1, 2, 3)) %>%
+    mutate(PC1 = 0, PC2 = 0, sgdd2 = sgdd^2, wai2 = wai^2, sgddb = 1/sgdd, 
+           waib = 1/(1 + wai), SDM = 0) %>%
+    dplyr::select(sgdd, wai, sgddb, waib, wai2, sgdd2, PC1, PC2, N, SDM)
+  
+  # Get the range of mu values
+  mu_range.i <- getRangemu(
+    climate = margins.in, fit = fit.in, BA = seq(0, 200, by = 10),
+    mesh = seq(90, get_maxdbh(fit.in) * 1.1, by = 2))
+  
+  # Make the mu matrix
+  mu.in <- make_mu_gr(
+    species = species.in, fit = fit.in, 
+    mesh = c(m = 700, L = 90, U = get_maxdbh(fit.in) * 1.1),
+    verbose = TRUE, stepMu = 0.001)
+  
+  # Create species object from random distribution
+  sp.in = species(IPM = mu.in, init_pop = def_initBA(20),
+                  harvest_fun = def_harv)
+  # Update disturbance function
+  sp.in$disturb_fun = disturb_fun
+  # Add disturbance coefficients
+  sp.in$disturb_coef  <- filter(
+    matreex::disturb_coef, species == species.in)
+  
+  # Name of the file to save
+  file.in = paste0("rds/", CS.in, "/species_mu/", species.in, ".rds")
+  
+  # Save species object in a rdata
+  create_dir_if_needed(file.in)
+  saveRDS(sp.in, file.in)
+  
+  # Return output list
+  return(file.in)
+  
+}
+
+
+
+#' Function to make a list of simulations till equilibrium via mu integration
+#' @param future_climate future climate data, formatted
+#' @param species_list df with information on all species object
+#' @param species_mu vector containing all species mu rds files created
+#' @param ID.species.in ID of the species to simulate in forest_list
+make_simulations_equilibrium_mu = function(
+  future_climate, species_list, species_mu, ID.species.in){
+  
+  
+  # Identify the species and case study for iteration i
+  species.in = species_list$species[ID.species.in]
+  CS.in = species_list$CS[ID.species.in]
+  
+  # Climate for the simulation : climate of the first year
+  climate.in = setNames(
+    object = as.numeric(
+      future_climate %>% 
+        ungroup() %>%
+        filter(CS == CS.in & year == min(future_climate$year)) %>%
+        summarize(sgdd = mean(sgdd), wai = mean(wai)) %>%
+        mutate(PC1 = 0, PC2 = 0, sgdd2 = sgdd^2, wai2 = wai^2, sgddb = 1/sgdd, 
+               waib = 1/(1 + wai), N = 2, SDM = 0) %>%
+        dplyr::select(sgdd, wai, sgddb, waib, wai2, sgdd2, PC1, PC2, N, SDM)
+    ), c("sgdd", "wai", "sgddb", "waib", "wai2", "sgdd2", "PC1", "PC2", "N", "SDM")
+  )
+  
+  
+  # Load species object
+  sp.in = readRDS(species_mu[ID.species.in])
+  
+  # Make forest
+  forest.in = forest(species = list(mu = sp.in), harv_rules = c(
+    Pmax = 0.25, dBAmin = 3, freq = 1, alpha = 1))
+  
+  # Run simulation till equilibrium
+  sim.in = sim_deter_forest(
+    forest.in, tlim = 4000, equil_time = 50000, equil_dist = 2000, climate = climate.in,
+    equil_diff = 0.5, harvest = "default", SurfEch = 0.03, verbose = TRUE)
+  
+  # Name of the file to save
+  file.in = paste0("rds/", CS.in, "/sim_equilibrium_mu/", species.in, ".rds")
+  
+  # Save species object in a rdata
+  create_dir_if_needed(file.in)
+  saveRDS(sim.in, file.in)
+  
+  # Return output list
+  return(file.in)
+}
+
+
+
+#' Make mu simulations with dist and changing climate
+#' @param future_climate future climate data, formatted
+#' @param species_list df with information on all species object
+#' @param species_mu vector containing all species mu rds files created
+#' @param sim_equilibrium_mu Vector containing file names of simulations till equil
+#' @param ID.scenarios ID of the climatic - dist scenario
+#' @param df_scenarios disturbance and climatic scenarios dataframe
+make_simulations_disturbance_mu = function(
+  species_list, future_climate, species_mu, sim_equilibrium_mu, ID.scenarios, 
+  df_scenarios){
+  
+  print(ID.scenarios)
+  # Identify the species, case studies, climate scenarios, etc.
+  ID.species.in = df_scenarios$ID.species[ID.scenarios]
+  species.in = species_list$species[ID.species.in]
+  CS.in = species_list$CS[ID.species.in]
+  ssp.in = df_scenarios$ssp[ID.scenarios]
+  dist.n.in = df_scenarios$dist.n[ID.scenarios]
+  dist.type.in = df_scenarios$dist.type[ID.scenarios]
+  dist.Iref.in = df_scenarios$dist.Iref[ID.scenarios]
+  dist.Islope.in = df_scenarios$dist.Islope[ID.scenarios]
+  
+  # Build climate file for the simulations 
+  #   /!\ CHANGE TIME WHEN CLIMATE PROBLEM SOLVED
+  climate.in = future_climate %>% 
+    ungroup() %>%
+    filter(CS == CS.in & ssp == ssp.in) %>%
+    mutate(sgdd2 = sgdd^2, wai2 = wai^2, sgddb = 1/sgdd, 
+           waib = 1/(1 + wai), t = c(1:dim(.)[1])) %>% 
+    dplyr::select(sgdd, wai, sgddb, waib, wai2, sgdd2, t)
+  
+  # Build disturbance df
+  disturbance.df = data.frame(type = dist.type.in, IsSurv = FALSE, t = as.numeric(
+    trunc(quantile(climate.in$t, probs = c(1:(dist.n.in))/(dist.n.in+1))))) %>%
+    mutate(intensity = dist.Iref.in + dist.Islope.in*t)
+  
+  # Get equilibrium simulation
+  sim.equil.in = readRDS(sim_equilibrium_mu[ID.species.in])
+  
+  # Checked that the population did reach equilibrium
+  reached_equil = !is.na(sum((sim.equil.in %>%
+                                filter(var == "BAsp") %>%
+                                filter(time == max(.$time) - 1))$value))
+  
+  # Continue only if reached equilibrium
+  if(reached_equil){
+    
+    # Get the distribution at equilibrium
+    distrib.in <- filter(sim.equil.in, equil, var == "n") %>% pull(value) * 0.03
+    
+    # Load species mu object
+    sp.in = readRDS(species_mu[ID.species.in])
+    
+    # Change initial distribution
+    sp.in$init_pop <- def_init_k(distrib.in*0.03)
+    
+    # Make forest
+    forest.in = forest(species = list(mu = sp.in), harv_rules = c(
+      Pmax = 0.25, dBAmin = 3, freq = 1, alpha = 1))
+    
+    # Run simulation with a changing climate and disturbance
+    sim.dist.in = sim_deter_forest(
+      forest.in, tlim = max(climate.in$t), climate = climate.in, 
+      equil_dist = max(climate.in$t),  equil_time = max(climate.in$t), 
+      verbose = TRUE, correction = "cut", disturbance = disturbance.df)
+    
+  } else {
+    sim.dist.in = matrix()
+  }
+  
+  # Name of the file to save
+  file.in = paste0("rds/", CS.in, "/sim_disturbance_mu/", species.in, "_", ssp.in, 
+                   "_", dist.n.in, dist.type.in, "dist_", dist.Iref.in, "Iref_", 
+                   dist.Islope.in, "Islope.rds")
+  
+  
+  # Save species object in a rdata
+  create_dir_if_needed(file.in)
+  saveRDS(sim.dist.in, file.in)
+  
+  # Return output list
+  return(file.in)
+  
+}
+
 
 
 

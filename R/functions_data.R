@@ -875,14 +875,9 @@ make_species_mu_rds = function(future_climate, species_list, ID.species.in){
            waib = 1/(1 + wai), SDM = 0) %>%
     dplyr::select(sgdd, wai, sgddb, waib, wai2, sgdd2, PC1, PC2, N, SDM)
   
-  # Get the range of mu values
-  mu_range.i <- getRangemu(
-    climate = margins.in, fit = fit.in, BA = seq(0, 200, by = 10),
-    mesh = seq(90, get_maxdbh(fit.in) * 1.1, by = 2))
-  
   # Make the mu matrix
   mu.in <- make_mu_gr(
-    species = species.in, fit = fit.in, 
+    species = species.in, fit = fit.in, climate = margins.in, 
     mesh = c(m = 700, L = 90, U = get_maxdbh(fit.in) * 1.1),
     verbose = TRUE, stepMu = 0.001)
   

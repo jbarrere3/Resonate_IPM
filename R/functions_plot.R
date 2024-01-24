@@ -18,12 +18,22 @@
 #' @param CS
 create_CS_color.vec = function(CS){
   
-  # Vector of color
-  color.vec = c("#FFB703", "#DC2F02", "#81B29A", "#48CAE4", "#005F73", "#6930C3", 
-                "#588157", "#55A930", "#57CC99")[c(1:length(names(CS)))]
+  # Get climate in each cs
+  data.clim = data.frame(CS = names(CS), sgdd = NA_real_)
+  for(i in 1:dim(data.clim)[1]) data.clim$sgdd[i] = CS[[i]]$climate[1]
   
-  # Named vector to use it in ggplot functions scale_color/fill
-  names(color.vec) = names(CS)
+  # Initialize color of vector
+  color.vec = colorRampPalette(c("orange", "blue"))(dim(data.clim)[1])
+  
+  # Name color vector based on sgdd value
+  names(color.vec) = arrange(data.clim, desc(sgdd))$CS
+  
+  # # Vector of color
+  # color.vec = c("#FFB703", "#DC2F02", "#81B29A", "#48CAE4", "#005F73", "#6930C3", 
+  #               "#588157", "#55A930", "#57CC99")[c(1:length(names(CS)))]
+  # 
+  # # Named vector to use it in ggplot functions scale_color/fill
+  # names(color.vec) = names(CS)
   
   # Return vector
   return(color.vec)
@@ -246,7 +256,8 @@ plot_FD_effect_resilience = function(FD, resilience, CS_color.vec, dir.in){
   plot.out = data.out %>%
     mutate(significance = ifelse(est.low > 0 | est.high < 0, "yes", "no")) %>%
     mutate(var.resp = factor(var.resp, levels = c("resistance", "recovery", "resilience")), 
-           var.exp = factor(var.exp, levels = c("H", "FD", "CWM"))) %>%
+           var.exp = factor(var.exp, levels = c("H", "FD", "CWM")), 
+           CS = factor(CS, levels = names(CS_color.vec))) %>%
     ggplot(aes(x = CS, y = est, color = significance, fill = CS)) + 
     geom_errorbar(aes(ymin = est.low, ymax = est.high),
                   width = 0) + 
@@ -255,7 +266,7 @@ plot_FD_effect_resilience = function(FD, resilience, CS_color.vec, dir.in){
     scale_color_manual(values = c(`no` = "gray", `yes` = "black")) +
     scale_fill_manual(values = CS_color.vec) +
     geom_hline(yintercept = 0, linetype = "dashed") +
-    facet_grid(var.resp ~ var.exp, scales = "free") +
+    facet_grid(var.exp ~ var.resp, scales = "free") +
     theme(panel.background = element_rect(color = "black", fill = "white"), 
           panel.grid = element_blank(), 
           strip.background = element_blank(), 
@@ -301,11 +312,11 @@ plot_n_per_richness = function(CS, file.out){
   plot.out = nperrichness %>%
     ggplot(aes(x = Richness, y = n)) + 
     geom_bar(stat = "identity") + 
-    facet_wrap(~ CS, nrow = 2) + 
-    geom_hline(yintercept = 10, color = "red", linetype = "dashed")
+    facet_wrap(~ CS, nrow = 1) + 
+    geom_hline(yintercept = 20, color = "red", linetype = "dashed")
   
   # Save plot 
-  ggsave(file.out, plot.out, width = 21, height = 11, units = "cm", 
+  ggsave(file.out, plot.out, width = 21, height = 7, units = "cm", 
          dpi = 600, bg = "white")
   
   # Return file saved
